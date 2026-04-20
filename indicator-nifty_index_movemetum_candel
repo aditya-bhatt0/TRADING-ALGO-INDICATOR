@@ -1,0 +1,88 @@
+//@version=5
+indicator("NIFTY MOMENTUM CANDLE (INTRADAY ONLY)", overlay=true)
+
+// =======================
+// 🕒 SAME DAY CHECK
+// =======================
+is_same_day = dayofmonth == dayofmonth[1]
+
+// =======================
+// 📊 BODY CALCULATION
+// =======================
+body_perc = ((close - open) / open) * 100
+
+// =======================
+// 📊 WICK CALCULATION
+// =======================
+upper_wick_perc = ((high - close) / open) * 100
+lower_wick_perc = ((open - low) / open) * 100
+
+// =======================
+// 📊 VOLUME CONDITION
+// =======================
+avg_vol = ta.sma(volume[1], 5)
+is_vol_high = volume > avg_vol
+
+// =======================
+// 📏 PREVIOUS CANDLE FILTER
+// =======================
+prev_range = high[1] - low[1]
+curr_range = high - low
+prev_ok = prev_range < (curr_range * 0.5)
+
+// Apply SAME DAY condition to previous candle
+prev_valid = is_same_day and prev_ok
+
+// =======================
+// 🟢 CALL SIDE
+// =======================
+is_green_big = close > open and body_perc > 0.10
+wick_ok_green = (upper_wick_perc < 0.2 and lower_wick_perc < 0.2)
+
+is_call_momentum = is_green_big and wick_ok_green and is_vol_high and prev_valid
+
+// =======================
+// 🔴 PUT SIDE
+// =======================
+is_red_big = close < open and body_perc < -0.10
+wick_ok_red = (upper_wick_perc < 0.2 and lower_wick_perc < 0.2)
+
+is_put_momentum = is_red_big and wick_ok_red and is_vol_high and prev_valid
+
+// =======================
+// 🎨 COLORS
+// =======================
+colorCall = color.new(color.green, 80)
+colorPut  = color.new(color.red, 80)
+
+// =======================
+// 📦 LIMIT ZONE TILL DAY END
+// =======================
+// Detect new day
+new_day = ta.change(dayofmonth)
+
+// Calculate bars left in day (approx)
+bars_per_day = 375   // for 1-min timeframe (9:15–15:30)
+right_limit = bar_index + (bars_per_day - (bar_index % bars_per_day))
+
+// =======================
+// 📦 CALL ZONE
+// =======================
+if is_call_momentum
+    box.new(bar_index, high, bar_index + 1, low, border_color=colorCall, bgcolor=colorCall)
+
+    box.new(bar_index - 1, high[1], right_limit, low[1], border_color=colorCall, bgcolor=colorCall)
+
+    y_center = (high[1] + low[1]) / 2
+    line.new(bar_index - 1, y_center, right_limit, y_center, color=color.green, width=2)
+
+// =======================
+// 📦 PUT ZONE
+// =======================
+if is_put_momentum
+    box.new(bar_index, high, bar_index + 1, low, border_color=colorPut, bgcolor=colorPut)
+
+    box.new(bar_index - 1, high[1], right_limit, low[1], border_color=colorPut, bgcolor=colorPut)
+
+    y_center = (high[1] + low[1]) / 2
+    line.new(bar_index - 1, y_center, right_limit, y_center, color=color.red, width=2)
