@@ -219,4 +219,11 @@ sws.on_data = on_data
 sws.on_error = on_error
 sws.on_close = on_close
 
-sws.connect()
+while True:
+    try:
+        print("🔌 Connecting WebSocket...")
+        sws.connect()
+    except Exception as e:
+        print("⚠️ Disconnected:", e)
+        print("🔄 Reconnecting in 5 sec...")
+        time.sleep(5)
