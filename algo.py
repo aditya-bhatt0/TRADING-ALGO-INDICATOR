@@ -2,228 +2,177 @@
 
 
 from SmartApi import SmartConnect
-from SmartApi.smartWebSocketV2 import SmartWebSocketV2
-import pyotp, pandas as pd, pytz, time, requests
+import pyotp, requests, time
 from datetime import datetime
+import traceback
 
-# ================= CONFIG =================
+# ========= CONFIG =========
 API_KEY = "x2dxUBP6"
 CLIENT_ID = "A58372607"
 PASSWORD = "7777"
 TOTP_SECRET = "B5PEOYQHVMQGHVIKMLRBLH7WUE"
 
-LOT_SIZE = 50
-TARGET = 8
-SL = 8
-MAX_TRADES = 2
-AUTO_TRADE = False   # 🔴 KEEP FALSE FIRST
+LOT_SIZE = 65
+AUTO_TRADE = True
 
-# =========================================
-
-# LOGIN
-obj = SmartConnect(api_key=API_KEY)
-totp = pyotp.TOTP(TOTP_SECRET).now()
-data = obj.generateSession(CLIENT_ID, PASSWORD, totp)
-
-AUTH_TOKEN = data['data']['jwtToken']
-FEED_TOKEN = obj.getfeedToken()
-
-# LOAD INSTRUMENT
-url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-df = pd.DataFrame(requests.get(url).json())
-df['strike'] = df['strike'].astype(float)
-
-# ================= GLOBAL =================
-candles = []
-position = None
-entry_price = 0
-trade_count = 0
-ce_data = None
-pe_data = None
-
-# ================= ATM =================
-def get_atm_options():
-    global ce_data, pe_data
-
-    ltp = obj.ltpData("NSE", "NIFTY", "26000")['data']['ltp']
-    strike = round(ltp / 50) * 50
-
-    nifty = df[df['symbol'].str.startswith("NIFTY")]
-    nifty = nifty[nifty['instrumenttype'] == "OPTIDX"]
-
-    expiry = sorted(nifty['expiry'].dropna().unique())[0]
-    nifty['strike_val'] = nifty['strike'] / 100
-
-    ce = nifty[(nifty['expiry']==expiry) & (nifty['symbol'].str.endswith("CE"))].copy()
-    pe = nifty[(nifty['expiry']==expiry) & (nifty['symbol'].str.endswith("PE"))].copy()
-
-    ce = ce.iloc[(ce['strike_val']-strike).abs().argsort()[:1]]
-    pe = pe.iloc[(pe['strike_val']-strike).abs().argsort()[:1]]
-
-    ce_data = ce.iloc[0]
-    pe_data = pe.iloc[0]
-
-    print(f"ATM: {strike} {ce_data['symbol']} {pe_data['symbol']}")
-
-# ================= ORDER =================
-def place_order(opt):
-    global entry_price, position, trade_count
-
-    if trade_count >= MAX_TRADES:
-        return
-
-    print("📈 ORDER:", opt['symbol'])
-
-    if not AUTO_TRADE:
-        print("⚠️ AUTO TRADE OFF")
-        return
-
-    res = obj.placeOrder({
-        "variety": "NORMAL",
-        "tradingsymbol": opt['symbol'],
-        "symboltoken": opt['token'],
-        "transactiontype": "BUY",
-        "exchange": "NFO",
-        "ordertype": "MARKET",
-        "producttype": "INTRADAY",
-        "duration": "DAY",
-        "quantity": LOT_SIZE
-    })
-
-    print("Order Response:", res)
-
-    ltp = obj.ltpData("NFO", opt['symbol'], opt['token'])['data']['ltp']
-    entry_price = ltp
-    position = opt
-    trade_count += 1
-
-def exit_order():
-    global position
-
-    if position is None:
-        return
-
-    print("❌ EXIT:", position['symbol'])
-
-    obj.placeOrder({
-        "variety": "NORMAL",
-        "tradingsymbol": position['symbol'],
-        "symboltoken": position['token'],
-        "transactiontype": "SELL",
-        "exchange": "NFO",
-        "ordertype": "MARKET",
-        "producttype": "INTRADAY",
-        "duration": "DAY",
-        "quantity": LOT_SIZE
-    })
-
-    position = None
-
-# ================= CANDLE =================
-def build_candle(price):
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(ist).replace(second=0, microsecond=0)
-
-    if not candles:
-        candles.append({"time": now, "open": price, "high": price, "low": price, "close": price})
-        return
-
-    last = candles[-1]
-
-    if now == last["time"]:
-        last["high"] = max(last["high"], price)
-        last["low"] = min(last["low"], price)
-        last["close"] = price
-    else:
-        candles.append({"time": now, "open": price, "high": price, "low": price, "close": price})
-
-        if len(candles) > 50:
-            candles.pop(0)
-
-        check_signal()
-
-# ================= EMA =================
-def check_signal():
-    global position
-
-    if len(candles) < 20:
-        return
-
-    df_c = pd.DataFrame(candles)
-    df_c['ema9'] = df_c['close'].ewm(span=9).mean()
-    df_c['ema15'] = df_c['close'].ewm(span=15).mean()
-
-    if position is None:
-
-        if df_c.iloc[-2]['ema9'] < df_c.iloc[-2]['ema15'] and df_c.iloc[-1]['ema9'] > df_c.iloc[-1]['ema15']:
-            print("🚀 CALL SIGNAL")
-            place_order(ce_data)
-
-        elif df_c.iloc[-2]['ema9'] > df_c.iloc[-2]['ema15'] and df_c.iloc[-1]['ema9'] < df_c.iloc[-1]['ema15']:
-            print("🔻 PUT SIGNAL")
-            place_order(pe_data)
-
-# ================= MONITOR =================
-def monitor(price):
-    global position, entry_price
-
-    if position is None:
-        return
-
-    if price >= entry_price + TARGET:
-        print("🎯 TARGET HIT")
-        exit_order()
-
-    elif price <= entry_price - SL:
-        print("🛑 SL HIT")
-        exit_order()
-
-# ================= WEBSOCKET =================
-sws = SmartWebSocketV2(AUTH_TOKEN, API_KEY, CLIENT_ID, FEED_TOKEN)
-
-def on_open(ws):
-    print("Connected")
-    get_atm_options()
-
-    tokens = [{"exchangeType": 1, "tokens": ["26000"]}]
-    sws.subscribe("1", 1, tokens)
-
-def on_data(ws, message):
+# ========= SAFE LOGIN =========
+def login():
     try:
-        if 'data' not in message:
-            return
+        obj = SmartConnect(API_KEY)
+        totp = pyotp.TOTP(TOTP_SECRET).now()
+        obj.generateSession(CLIENT_ID, PASSWORD, totp)
+        print("✅ Logged in")
+        return obj
+    except Exception as e:
+        print("❌ LOGIN ERROR:", e)
+        return None
 
-        data = message['data']
+obj = login()
 
-        if 'last_traded_price' not in data:
-            return
+# ========= LOAD MASTER (RETRY SAFE) =========
+def load_master():
+    for _ in range(3):
+        try:
+            data = requests.get(
+                "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json",
+                timeout=10
+            ).json()
+            print("✅ Master Loaded")
+            return data
+        except:
+            print("Retrying master...")
+            time.sleep(2)
+    raise Exception("Master load failed")
 
-        price = data['last_traded_price'] / 100
+master = load_master()
 
-        print("LTP:", price)
+# ========= GET EXPIRY =========
+from datetime import datetime as dt
 
-        build_candle(price)
-        monitor(price)
+def get_expiry():
+    expiries = {
+        x['expiry'] for x in master
+        if x['name']=="NIFTY"
+        and x['instrumenttype']=="OPTIDX"
+        and x['expiry']
+    }
+
+    parsed = []
+    for e in expiries:
+        try:
+            parsed.append((dt.strptime(e, "%d%b%Y"), e))
+        except:
+            pass
+
+    parsed.sort()
+    today = dt.now()
+
+    for d, e in parsed:
+        if d.date() >= today.date():
+            return e
+
+    return parsed[0][1]
+
+expiry = get_expiry()
+print("📅 Expiry:", expiry)
+
+# ========= GET ATM =========
+def get_atm_ce():
+    try:
+        ltp = obj.ltpData("NSE", "NIFTY", "26000")['data']['ltp']
+        strike = round(ltp/50)*50
+
+        for s in master:
+            if (s['name']=="NIFTY"
+                and s['expiry']==expiry
+                and s['symbol'].endswith("CE")
+                and str(strike) in s['symbol']):
+                return s
 
     except Exception as e:
-        print("WS ERROR:", e)
+        print("ATM ERROR:", e)
 
-def on_error(ws, error):
-    print("Error:", error)
+    return None
 
-def on_close(ws):
-    print("Closed")
+# ========= ORDER =========
+last_order_time = None
 
-sws.on_open = on_open
-sws.on_data = on_data
-sws.on_error = on_error
-sws.on_close = on_close
+def place_order(opt):
+    global last_order_time
+
+    # prevent duplicate orders
+    if last_order_time and (time.time() - last_order_time < 120):
+        print("⛔ Skipping duplicate order")
+        return
+
+    print("📈 BUY:", opt['symbol'])
+
+    if not AUTO_TRADE:
+        print("⚠️ AUTO OFF")
+        return
+
+    try:
+        res = obj.placeOrder({
+            "variety":"NORMAL",
+            "tradingsymbol":opt['symbol'],
+            "symboltoken":opt['token'],
+            "transactiontype":"BUY",
+            "exchange":"NFO",
+            "ordertype":"MARKET",
+            "producttype":"INTRADAY",
+            "duration":"DAY",
+            "quantity":LOT_SIZE
+        })
+
+        last_order_time = time.time()
+        print("✅ ORDER:", res)
+
+    except Exception as e:
+        print("❌ ORDER ERROR:", e)
+
+last_run_minute = -1
 
 while True:
     try:
-        print("🔌 Connecting WebSocket...")
-        sws.connect()
+        now = datetime.now()
+
+        # ========= STRICT MARKET TIME =========
+        if not (now.hour == 9 and now.minute >= 15) and not (9 < now.hour < 15) and not (now.hour == 15 and now.minute <= 30):
+            time.sleep(5)
+            continue
+
+        # ========= RUN EXACTLY AT CANDLE START =========
+        if now.second != 0:
+            time.sleep(0.5)
+            continue
+
+        # ========= PREVENT DUPLICATE RUN =========
+        if now.minute == last_run_minute:
+            time.sleep(1)
+            continue
+
+        last_run_minute = now.minute
+
+        print("\n⏱ RUN:", now.strftime("%H:%M:%S"))
+
+        # ========= GET ATM =========
+        ce = get_atm_ce()
+
+        if ce is None:
+            print("❌ CE not found")
+            continue
+
+        # ========= PLACE ORDER =========
+        place_order(ce)
+
+        # ========= SMALL SLEEP =========
+        time.sleep(1)
+
     except Exception as e:
-        print("⚠️ Disconnected:", e)
-        print("🔄 Reconnecting in 5 sec...")
+        print("🔥 LOOP ERROR:", e)
+        traceback.print_exc()
+
+        # auto re-login
+        obj = login()
+
         time.sleep(5)
