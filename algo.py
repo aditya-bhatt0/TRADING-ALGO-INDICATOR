@@ -7,10 +7,10 @@ from datetime import datetime
 import traceback
 
 # ========= CONFIG =========
-API_KEY = "x2d
-CLIENT_ID = "A577"
-PASSWORD = "77"
-TOTP_SECRET = "B5PEOYUE"
+API_KEY = "x2dxUBP6"
+CLIENT_ID = "A58372607"
+PASSWORD = "7777"
+TOTP_SECRET = "B5PEOYQHVMQGHVIKMLRBLH7WUE"
 
 LOT_SIZE = 65
 AUTO_TRADE = True
